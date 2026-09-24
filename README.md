@@ -134,33 +134,65 @@ sudo ./install-webui.sh --upgrade       # update to the latest Open WebUI
 
 ## LAN Assistant: SSH into your machines from the chat
 
-`install-ssh-tool.sh` adds a **LAN Assistant** model to the web chat. It can run commands on your other Linux
-machines over SSH, so you can ask things like "how full is the disk on nas?" or "why is nginx failing on web01?".
+The **LAN Assistant** model in the web chat can run commands on your other Linux machines over SSH. Name any
+machine as `user@host` or `user@ip`; you don't need to register it first.
 
 ```bash
-sudo ./install-ssh-tool.sh --add-host me@192.168.1.20 --alias nas     # asks for me's password once
-sudo ./install-ssh-tool.sh --add-host admin@192.168.1.30 --alias web01
+sudo ./install-ssh-tool.sh        # once: key, SSH-capable web UI, qwen3:8b, tool + model (asks for your admin login)
 ```
 
-Then pick **LAN Assistant** in the model menu.
+Then pick **LAN Assistant** in the model menu and ask, for example:
 
+> SSH to alice@192.168.25.40 and check the disk space
+
+**The first time you use a machine:**
+
+1. **Trust the host.** A dialog shows the machine's SSH host-key fingerprints. Confirm only if they match; to see
+   them, run `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on that machine. The key is then pinned, and every
+   connection uses strict checking.
+2. **Password, once, if needed.** If the assistant's key isn't installed for that user yet, a masked password
+   dialog appears. The password installs the key (`ssh-copy-id`) and is then discarded. Cancel if you'd rather add
+   the key yourself; the reply shows the public key to put in `~/.ssh/authorized_keys`.
+3. **Remembered.** The host is saved. Next time "what's the uptime of 192.168.25.40?" works with no dialogs. Say
+   "remember alice@192.168.25.40 as nas" to use `nas` from then on.
+
+**Security model:**
+
+- **Admin only:** the tool and the LAN Assistant model are private to the admin account, and the tool also refuses
+  any user who isn't an admin. Other users see only the normal chat models.
 - **Reads run directly; changes need your approval.** Commands that are clearly read-only (`df`, `free`, `uptime`,
-  `ps`, `systemctl status`, `journalctl`, `docker ps`, `cat` …) run straight away. Anything else opens a dialog
-  showing the exact command, host and user, and runs only if you click **Confirm**. That includes restarts,
-  installs, deletes, `sudo`, redirects like `>`, and any command it doesn't recognise. Cancelling, closing the tab
-  or letting the dialog time out all mean *not run*.
-- **Admin only:** the tool and the LAN Assistant model are private to the admin account, and the tool also checks
-  the admin role itself. Other users see only the normal chat models.
-- **Only registered hosts:** the assistant can reach only the hosts you add. It uses its own key
-  (`/etc/local-ai-code/ssh/id_ed25519`) and strict host-key checking. Host keys are recorded when you add a host.
-- **Least privilege:** each host is reached as the user you register. Use a normal account, not root. Commands
-  needing root will ask for `sudo`, which only works where that user has passwordless sudo, and which always needs
-  your approval anyway.
-- **Model:** `qwen3:8b` (~5 GB), because it reliably calls tools. The Qwen coder models don't. Choose another with
-  `--model`.
-- **Manage:** `--list` shows the hosts and the public key. `--remove-host HOST` removes a host; also delete the key
-  line from that host's `~/.ssh/authorized_keys`. Host changes take effect immediately.
-- Requires the web UI (`--webui`). Setting it up needs internet once, to add `openssh-client` to the web UI image.
+  `ps`, `systemctl status`, `journalctl`, `docker ps`, `cat` …) run straight away. Anything else shows the exact
+  command, host and user, and runs only if you click **Confirm**. That includes restarts, installs, deletes,
+  `sudo`, redirects like `>`, and any command it doesn't recognise. Cancelling, closing the tab or a timeout all
+  mean *not run*.
+- **Host keys:** trust on first use, but only after you confirm the fingerprint. Connections never use
+  `StrictHostKeyChecking=no`. If a pinned key changes, the assistant refuses to connect and tells you. After a
+  reinstall, reset it with `sudo ./install-ssh-tool.sh --remove-host HOST`.
+- **Passwords never reach the model.** The tool collects the password directly from the dialog and passes it to
+  `sshpass -e` through the environment, never on a command line. It is not stored, logged or returned to the
+  chat. The model is also told never to ask for passwords in the chat.
+- **LAN only:** a machine that isn't remembered yet must resolve to a private address (10/8, 172.16/12,
+  192.168/16, 100.64/10, loopback, IPv6 ULA/link-local). To change this, edit the tool's `allowed_networks` valve
+  (Workspace → Tools → LAN SSH → gear icon).
+- **Least privilege:** log in as a normal user, not root. `sudo` only works where that user has passwordless sudo,
+  and it always needs your approval.
+- **Files:** `/etc/local-ai-code/ssh/id_ed25519` is mounted read-only into the web UI. Remembered hosts and pinned
+  host keys live in `/etc/local-ai-code/ssh/state/`.
+
+**Model:** `qwen3:8b` (~5 GB) is the smallest Qwen that calls tools reliably on a CPU. The Qwen coder models don't
+produce proper tool calls, and `qwen3:4b` ignores the "no thinking" setting and takes minutes per answer. Choose a
+different model with `--model`.
+
+**From the terminal (optional):**
+
+```bash
+sudo ./install-ssh-tool.sh --list                                   # remembered hosts + the assistant's public key
+sudo ./install-ssh-tool.sh --add-host alice@192.168.25.40 --alias nas  # pre-install the key (fingerprint + password prompt here)
+sudo ./install-ssh-tool.sh --remove-host 192.168.25.40              # forget a host and its pinned key
+```
+
+Re-run `sudo ./install-ssh-tool.sh` after updating the repository to upgrade the tool. Setting it up needs internet
+once, to add `openssh-client` and `sshpass` to the web UI image.
 
 ## Running in a Proxmox VM
 
@@ -223,6 +255,15 @@ sudo ./uninstall.sh --purge      # remove everything, including models, users an
   `./webui-defaults.sh`, then start a new chat.
 - **The model can't "check the server":** chat models only produce text. They can't run commands or see the
   machine they run on.
+- **LAN Assistant says "not in the allowed LAN networks":** the machine resolved to a public address. Use its LAN
+  IP, or adjust the tool's `allowed_networks` valve.
+- **LAN Assistant says the host key changed:** the machine was reinstalled, or something is intercepting the
+  connection. If it's expected, run `sudo ./install-ssh-tool.sh --remove-host HOST` and connect again.
+- **The password dialog fails ("wrong password", or password login disabled):** add the public key from
+  `sudo ./install-ssh-tool.sh --list` to `~/.ssh/authorized_keys` of that user on the machine, then try again. No
+  password is needed after that.
+- **LAN Assistant uses `sudo` and it fails:** `sudo` needs passwordless sudo for that user. Ask the assistant to run
+  the command without `sudo`, or log in as a user who is allowed to do it.
 - **The web UI doesn't load:** run `docker ps` and `docker logs open-webui`. From another machine, check that
   `sudo ufw status` on the server allows port 3000.
 - **Out of memory:** use a smaller model with `sudo ./install.sh --model qwen2.5-coder:3b`, or lower the context

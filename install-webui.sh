@@ -134,7 +134,7 @@ fi
 # layer it on top of the Open WebUI image and mount the key/hosts read-only.
 RUN_EXTRA=()
 if [ -f "$SSH_DIR/id_ed25519" ]; then
-    info "LAN SSH tool is set up: building $SSH_IMAGE (adds openssh-client)..."
+    info "LAN SSH tool is set up: building $SSH_IMAGE (adds openssh-client, sshpass)..."
     BUILD_ARGS=()
     for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
         [ -n "${!v:-}" ] && BUILD_ARGS+=(--build-arg "$v=${!v}")
@@ -142,12 +142,14 @@ if [ -f "$SSH_DIR/id_ed25519" ]; then
     if [ "$DRY_RUN" = 1 ]; then
         echo "   [dry-run] docker build -t $SSH_IMAGE (FROM $IMAGE + openssh-client)"
     else
-        printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*\n' "$IMAGE" \
+        printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends openssh-client sshpass && rm -rf /var/lib/apt/lists/*\n' "$IMAGE" \
             | docker build -q --network host "${BUILD_ARGS[@]}" -t "$SSH_IMAGE" - >/dev/null \
-            || die "Could not build $SSH_IMAGE (needs internet for the openssh-client package)."
+            || die "Could not build $SSH_IMAGE (needs internet for the openssh-client/sshpass packages)."
     fi
     IMAGE="$SSH_IMAGE"
-    RUN_EXTRA+=(-v "$SSH_DIR:/ssh:ro")
+    # Key read-only; remembered hosts and pinned host keys writable (state/).
+    [ "$DRY_RUN" = 1 ] || install -d -m 700 "$SSH_DIR/state"
+    RUN_EXTRA+=(-v "$SSH_DIR:/ssh:ro" -v "$SSH_DIR/state:/ssh/state:rw")
 fi
 
 # ------------------------------------------------------------------ config ---

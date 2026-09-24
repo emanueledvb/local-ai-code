@@ -44,10 +44,10 @@ if [ "$PURGE" = 1 ]; then
     userdel ollama 2>/dev/null || true
     groupdel ollama 2>/dev/null || true
     rm -rf /usr/share/ollama
-    if [ -f /etc/local-ai-code/ssh/hosts ] && grep -qvE '^\s*(#|$)' /etc/local-ai-code/ssh/hosts; then
+    if [ -f /etc/local-ai-code/ssh/state/hosts ] && grep -qvE '^\s*(#|$)' /etc/local-ai-code/ssh/state/hosts; then
         echo "==> The LAN SSH key stays authorized on these hosts; remove the line ending in"
         echo "    'local-ai-code@$(hostname)' from ~/.ssh/authorized_keys on each:"
-        grep -vE '^\s*(#|$)' /etc/local-ai-code/ssh/hosts | sed 's/^/      /'
+        grep -vE '^\s*(#|$)' /etc/local-ai-code/ssh/state/hosts | sed 's/^/      /'
     fi
     rm -rf /etc/local-ai-code
     if command -v docker >/dev/null 2>&1; then

@@ -3,8 +3,16 @@
 # install-ssh-tool.sh - Let the web chat run commands on Linux machines in the
 # LAN over SSH ("LAN Assistant" model, admin account only).
 #
+#   sudo ./install-ssh-tool.sh                  # set up (or upgrade) the tool
+#
+# Then, in the chat, pick "LAN Assistant" and name any machine as user@host:
+#   "SSH to alice@192.168.25.40 and check the disk space"
+# The first time, the chat asks you to confirm the host-key fingerprint and,
+# if the assistant's key is not installed there yet, for that user's password
+# once. Successful hosts are remembered (use a short name or alias next time).
+#
+# Optional shortcuts from the terminal:
 #   sudo ./install-ssh-tool.sh --add-host me@192.168.1.20 --alias nas
-#   sudo ./install-ssh-tool.sh --add-host admin@web01
 #   sudo ./install-ssh-tool.sh --list
 #   sudo ./install-ssh-tool.sh --remove-host 192.168.1.20
 #
@@ -14,19 +22,21 @@
 
 set -euo pipefail
 
+# qwen3:8b: the smallest Qwen that calls tools reliably on CPU (the coder
+# models don't; qwen3:4b ignores think=false and is far slower). ~5 GB.
 MODEL="qwen3:8b"
 ADD_HOSTS=()
 ALIASES=()
 REMOVE_HOSTS=()
 LIST=0
-FORCE_SETUP=0
 
 SCRIPT_DIR=$(cd "$(dirname "$(realpath "$0")")" && pwd)
 ENV_DIR=/etc/local-ai-code
-SSH_DIR="$ENV_DIR/ssh"
+SSH_DIR="$ENV_DIR/ssh"            # mounted read-only at /ssh in the web UI
+STATE_DIR="$SSH_DIR/state"        # mounted read-write at /ssh/state
 KEY="$SSH_DIR/id_ed25519"
-HOSTS="$SSH_DIR/hosts"
-KNOWN="$SSH_DIR/known_hosts"
+HOSTS="$STATE_DIR/hosts"
+KNOWN="$STATE_DIR/known_hosts"
 MARKER="$SSH_DIR/.installed"
 
 if [ -t 1 ]; then
@@ -44,27 +54,31 @@ usage() {
     cat <<EOF
 Usage: sudo $0 [options]
 
-  --add-host USER@HOST   Allow the assistant to reach HOST as USER (repeatable).
-                         Asks for USER's password once to install the SSH key.
-  --alias NAME           Friendly name for the preceding --add-host (e.g. nas)
-  --remove-host HOST     Remove a host (and its recorded host key)
-  --list                 Show registered hosts and the public key
+With no options: set up or upgrade the tool (key, SSH-capable web UI image,
+$MODEL, tool + private "LAN Assistant" model). Hosts are added on demand
+from the chat; the options below are optional shortcuts.
+
+  --add-host USER@HOST   Pre-install the assistant's key on HOST for USER
+                         (asks to confirm the host key and USER's password)
+  --alias NAME           Short name for the preceding --add-host (e.g. nas)
+  --remove-host HOST     Forget HOST (all users) and its pinned host key
+  --list                 Show remembered hosts and the assistant's public key
   --model TAG            Tool-capable model for "LAN Assistant" (default: $MODEL)
-  --setup                Re-run the full setup (image, model, registration)
   -h, --help             Show this help
 EOF
 }
 
 ORIG_ARGS=("$@")
+SETUP=1
 while [ $# -gt 0 ]; do
     case "$1" in
-        --add-host)    ADD_HOSTS+=("${2:?}"); ALIASES+=(""); shift 2 ;;
+        --add-host)    ADD_HOSTS+=("${2:?}"); ALIASES+=(""); SETUP=0; shift 2 ;;
         --alias)       [ ${#ADD_HOSTS[@]} -gt 0 ] || die "--alias must follow --add-host"
                        ALIASES[${#ALIASES[@]}-1]="${2:?}"; shift 2 ;;
-        --remove-host) REMOVE_HOSTS+=("${2:?}"); shift 2 ;;
-        --list)        LIST=1; shift ;;
-        --model)       MODEL="${2:?}"; FORCE_SETUP=1; shift 2 ;;
-        --setup)       FORCE_SETUP=1; shift ;;
+        --remove-host) REMOVE_HOSTS+=("${2:?}"); SETUP=0; shift 2 ;;
+        --list)        LIST=1; SETUP=0; shift ;;
+        --model)       MODEL="${2:?}"; shift 2 ;;
+        --setup)       shift ;;   # kept for compatibility: setup is the default
         -h|--help)     usage; exit 0 ;;
         *)             usage >&2; die "Unknown option: $1" ;;
     esac
@@ -78,62 +92,83 @@ if ! have ssh-keygen || ! have ssh-copy-id; then
     die "openssh-client is required (apt-get install openssh-client)."
 fi
 
-SSH_OPTS=(-i "$KEY" -o "UserKnownHostsFile=$KNOWN" -o ConnectTimeout=10)
-
-# ------------------------------------------------------------------- key ---
-install -d -m 700 "$SSH_DIR"
+# ------------------------------------------------------------ key + state ---
+install -d -m 700 "$SSH_DIR" "$STATE_DIR"
+# Older versions kept hosts/known_hosts next to the key (read-only mount).
+for f in hosts known_hosts; do
+    if [ -f "$SSH_DIR/$f" ] && [ ! -s "$STATE_DIR/$f" ]; then
+        mv "$SSH_DIR/$f" "$STATE_DIR/$f"
+        info "Moved $SSH_DIR/$f to $STATE_DIR/"
+    fi
+done
 touch "$HOSTS" "$KNOWN"
-chmod 600 "$KNOWN"; chmod 644 "$HOSTS"
+chmod 600 "$KNOWN" "$HOSTS"
 if [ ! -f "$KEY" ]; then
     info "Creating the assistant's SSH key $KEY"
     ssh-keygen -q -t ed25519 -N "" -C "local-ai-code@$(hostname)" -f "$KEY"
 fi
 
 # ----------------------------------------------------------------- hosts ---
+host_re() {  # regex matching hosts-file lines for a host (any user, optional :port)
+    local h="${1#*@}"; h="${h%%:*}"
+    printf '^[^#[:space:]]*@%s(:[0-9]+)?([[:space:]]|$)' "${h//./\\.}"
+}
+
 for h in "${REMOVE_HOSTS[@]}"; do
-    name="${h#*@}"
-    if grep -qE "^[^#[:space:]]*@${name//./\\.}([[:space:]]|$)" "$HOSTS"; then
-        sed -i -E "/^[^#[:space:]]*@${name//./\\.}([[:space:]]|$)/d" "$HOSTS"
+    name="${h#*@}"; name="${name%%:*}"
+    re=$(host_re "$h")
+    if grep -qE "$re" "$HOSTS"; then
+        ports=$(grep -E "$re" "$HOSTS" | awk '{print $1}' | sed -nE 's/.*:([0-9]+)$/\1/p')
+        sed -i -E "/$re/d" "$HOSTS"
         ssh-keygen -q -R "$name" -f "$KNOWN" >/dev/null 2>&1 || true
+        for p in $ports; do ssh-keygen -q -R "[$name]:$p" -f "$KNOWN" >/dev/null 2>&1 || true; done
         rm -f "$KNOWN.old"
-        ok "Removed $name. Its authorized_keys still has the key: remove the line"
-        echo "   ending in 'local-ai-code@$(hostname)' from ~/.ssh/authorized_keys on $name."
+        ok "Forgot $name. Its authorized_keys may still contain the assistant's key: remove the"
+        echo "   line ending in 'local-ai-code@$(hostname)' from ~/.ssh/authorized_keys on $name."
     else
-        warn "$name is not registered."
+        # Not remembered, but a pinned key may exist (e.g. a declined first use).
+        if ssh-keygen -F "$name" -f "$KNOWN" >/dev/null 2>&1; then
+            ssh-keygen -q -R "$name" -f "$KNOWN" >/dev/null 2>&1
+            ok "Removed the pinned host key of $name."
+        else
+            warn "$name is not remembered."
+        fi
+        rm -f "$KNOWN.old"
     fi
 done
 
 for i in "${!ADD_HOSTS[@]}"; do
     target="${ADD_HOSTS[$i]}"; alias="${ALIASES[$i]}"
-    [[ "$target" == *@* ]] || die "Use USER@HOST for --add-host (got '$target')."
-    name="${target#*@}"
-    info "Installing the assistant's key on $target (enter $target's password if asked)..."
-    ssh-copy-id -i "$KEY.pub" -o "UserKnownHostsFile=$KNOWN" -o StrictHostKeyChecking=accept-new \
+    [[ "$target" =~ ^[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
+        || die "Use USER@HOST for --add-host (got '$target')."
+    info "Installing the assistant's key on $target."
+    echo "   Check the host-key fingerprint if asked, then enter $target's password."
+    # StrictHostKeyChecking=ask: an unknown host key is shown here for you to confirm.
+    ssh-copy-id -i "$KEY.pub" -o "UserKnownHostsFile=$KNOWN" -o StrictHostKeyChecking=ask \
         -o ConnectTimeout=10 "$target" \
         || die "Could not copy the key to $target. Check the address, user and that sshd runs there."
-    ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" true \
+    ssh -i "$KEY" -o "UserKnownHostsFile=$KNOWN" -o ConnectTimeout=10 -o BatchMode=yes \
+        -o StrictHostKeyChecking=yes "$target" true \
         || die "Key login to $target does not work."
-    sed -i -E "/^[^#[:space:]]*@${name//./\\.}([[:space:]]|$)/d" "$HOSTS"
-    echo "$target${alias:+ $alias}" >> "$HOSTS"
-    ok "Added $target${alias:+ (alias: $alias)}"
+    grep -vxE "$target([[:space:]].*)?" "$HOSTS" > "$HOSTS.tmp" || true
+    if [ -n "$alias" ]; then   # an alias names exactly one host
+        sed -i -E "s/[[:space:]]$alias([[:space:]]|$)/\1/" "$HOSTS.tmp"
+    fi
+    echo "$target${alias:+ $alias}" >> "$HOSTS.tmp"
+    mv "$HOSTS.tmp" "$HOSTS"; chmod 600 "$HOSTS"
+    ok "Remembered $target${alias:+ (alias: $alias)}"
 done
 
 if [ "$LIST" = 1 ]; then
-    echo "Registered hosts ($HOSTS):"
-    grep -vE '^\s*(#|$)' "$HOSTS" | sed 's/^/  /' || echo "  (none)"
+    echo "Remembered hosts ($HOSTS):"
+    grep -vE '^\s*(#|$)' "$HOSTS" | sed 's/^/  /' || echo "  (none yet: they are added when first used from the chat)"
     echo
-    echo "Public key (add it to ~/.ssh/authorized_keys on a host to allow it manually):"
+    echo "Assistant's public key (to allow a host without a password, add it to"
+    echo "\$HOME/.ssh/authorized_keys of the user on that host):"
     echo "  $(cat "$KEY.pub")"
 fi
 
-# Adding/removing hosts on an existing setup takes effect immediately.
-if [ -f "$MARKER" ] && [ "$FORCE_SETUP" = 0 ]; then
-    exit 0
-fi
-if [ ${#ADD_HOSTS[@]} -eq 0 ] && [ ! -f "$MARKER" ] && ! grep -qvE '^\s*(#|$)' "$HOSTS"; then
-    warn "No hosts registered yet: the assistant will have nothing to connect to."
-    warn "Add one with: sudo $0 --add-host USER@HOST"
-fi
+[ "$SETUP" = 1 ] || exit 0
 
 # ----------------------------------------------------------------- setup ---
 [ -f "$ENV_DIR/webui.env" ] || die "The web UI is not installed. Run: sudo ./install-webui.sh"
@@ -160,11 +195,15 @@ cat <<EOF
 
 ${C_GRN}LAN SSH tool ready.${C_OFF}
   In the web chat, pick the model "LAN Assistant" and ask e.g.
-  "How much disk space is free on nas?" or "Why is nginx failing on web01?"
+    "SSH to alice@192.168.25.40 and check the disk space"
+  First use of a machine: confirm its host-key fingerprint and, if needed,
+  enter that user's password once (in a dialog, never in the chat). The host
+  is then remembered: "check uptime on 192.168.25.40" or an alias
+  ("call it nas") works next time.
 
   Read-only commands run directly; changes wait for your approval.
   Only your admin account can see and use it.
 
-  Add machines:  sudo $0 --add-host USER@HOST [--alias NAME]
-  List/remove:   sudo $0 --list  |  --remove-host HOST
+  Remembered hosts / public key:  sudo $0 --list
+  Forget a host:                  sudo $0 --remove-host HOST
 EOF
