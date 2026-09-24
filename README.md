@@ -109,6 +109,9 @@ history, markdown and code highlighting, file uploads, and user accounts.
 - **Accounts:** the first account created becomes the admin, and sign-up then closes. Add people in
   **Admin Panel → Users → +**. Or turn on **Admin Panel → Settings → General → Enable New Sign Ups**; new users then
   wait for your approval.
+- **Share the models:** Open WebUI shows models only to the admin by default. After creating your admin account,
+  run `./webui-defaults.sh` once so other users can see the chat models. Private custom models such as LAN
+  Assistant stay hidden.
 - **Private by design:** the web UI reaches Ollama over `localhost`. Without `--lan`, the Ollama API is not exposed
   at all, and the network only sees the web UI, which requires a login.
 - **Offline:** it runs with `OFFLINE_MODE`, telemetry off and no cloud providers. The embedding models it needs for
@@ -128,6 +131,36 @@ history, markdown and code highlighting, file uploads, and user accounts.
 docker logs -f open-webui               # logs
 sudo ./install-webui.sh --upgrade       # update to the latest Open WebUI
 ```
+
+## LAN Assistant: SSH into your machines from the chat
+
+`install-ssh-tool.sh` adds a **LAN Assistant** model to the web chat. It can run commands on your other Linux
+machines over SSH, so you can ask things like "how full is the disk on nas?" or "why is nginx failing on web01?".
+
+```bash
+sudo ./install-ssh-tool.sh --add-host me@192.168.1.20 --alias nas     # asks for me's password once
+sudo ./install-ssh-tool.sh --add-host admin@192.168.1.30 --alias web01
+```
+
+Then pick **LAN Assistant** in the model menu.
+
+- **Reads run directly; changes need your approval.** Commands that are clearly read-only (`df`, `free`, `uptime`,
+  `ps`, `systemctl status`, `journalctl`, `docker ps`, `cat` …) run straight away. Anything else opens a dialog
+  showing the exact command, host and user, and runs only if you click **Confirm**. That includes restarts,
+  installs, deletes, `sudo`, redirects like `>`, and any command it doesn't recognise. Cancelling, closing the tab
+  or letting the dialog time out all mean *not run*.
+- **Admin only:** the tool and the LAN Assistant model are private to the admin account, and the tool also checks
+  the admin role itself. Other users see only the normal chat models.
+- **Only registered hosts:** the assistant can reach only the hosts you add. It uses its own key
+  (`/etc/local-ai-code/ssh/id_ed25519`) and strict host-key checking. Host keys are recorded when you add a host.
+- **Least privilege:** each host is reached as the user you register. Use a normal account, not root. Commands
+  needing root will ask for `sudo`, which only works where that user has passwordless sudo, and which always needs
+  your approval anyway.
+- **Model:** `qwen3:8b` (~5 GB), because it reliably calls tools. The Qwen coder models don't. Choose another with
+  `--model`.
+- **Manage:** `--list` shows the hosts and the public key. `--remove-host HOST` removes a host; also delete the key
+  line from that host's `~/.ssh/authorized_keys`. Host changes take effect immediately.
+- Requires the web UI (`--webui`). Setting it up needs internet once, to add `openssh-client` to the web UI image.
 
 ## Running in a Proxmox VM
 

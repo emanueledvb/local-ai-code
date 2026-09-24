@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-PORT=3000
+PORT=""                          # default: keep the current port, else 3000
 IMAGE="ghcr.io/open-webui/open-webui:main"
 IMAGE_TAR=""
 OLLAMA_URL=""
@@ -26,6 +26,8 @@ CONTAINER=open-webui
 VOLUME=open-webui
 ENV_DIR=/etc/local-ai-code
 ENV_FILE="$ENV_DIR/webui.env"
+SSH_DIR="$ENV_DIR/ssh"            # set up by install-ssh-tool.sh
+SSH_IMAGE="local-ai-code/open-webui-ssh:latest"
 
 if [ -t 1 ]; then
     C_BLUE=$'\e[1;34m'; C_YEL=$'\e[1;33m'; C_RED=$'\e[1;31m'; C_GRN=$'\e[1;32m'; C_OFF=$'\e[0m'
@@ -43,7 +45,7 @@ usage() {
     cat <<EOF
 Usage: sudo $0 [options]
 
-  --port N             Web UI port (default: $PORT)
+  --port N             Web UI port (default: current port, else 3000)
   --default-model TAG  Model preselected for new chats (default: best installed Qwen coder)
   --ollama-url URL     Ollama API (default: read from the Ollama service, else http://127.0.0.1:11434)
   --allow CIDR         With ufw active: only allow this subnet (default: local subnet)
@@ -72,6 +74,7 @@ while [ $# -gt 0 ]; do
         *)              usage >&2; die "Unknown option: $1" ;;
     esac
 done
+[ -n "$PORT" ] || PORT=$(grep -oP '^PORT=\K[0-9]+' "$ENV_FILE" 2>/dev/null || echo 3000)
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
 
 if [ "$DRY_RUN" = 0 ] && [ "$(id -u)" -ne 0 ]; then
@@ -93,6 +96,10 @@ fi
 # Default model in the UI: as given, else the best installed coder model
 # (never a '-base' autocomplete model).
 MODELS=$(curl -fsS --max-time 5 "$OLLAMA_URL/api/tags" 2>/dev/null | grep -oE '"name":"[^"]+"' | cut -d'"' -f4 || true)
+DEFAULT_MODEL_GIVEN=0
+[ -n "$DEFAULT_MODEL" ] && DEFAULT_MODEL_GIVEN=1
+# On a re-run keep the previously configured default.
+[ -n "$DEFAULT_MODEL" ] || DEFAULT_MODEL=$(grep -oP '^DEFAULT_MODELS=\K.+' "$ENV_FILE" 2>/dev/null || true)
 [ -n "$DEFAULT_MODEL" ] || for cand in qwen3-coder:30b qwen2.5-coder:32b qwen2.5-coder:14b qwen2.5-coder:7b \
             qwen2.5-coder:3b qwen2.5-coder:1.5b; do
     if echo "$MODELS" | grep -qxF "$cand"; then DEFAULT_MODEL="$cand"; break; fi
@@ -121,6 +128,26 @@ elif [ "$UPGRADE" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     run docker pull "$IMAGE"
 else
     ok "Image $IMAGE already present (use --upgrade for the latest version)."
+fi
+
+# The LAN SSH tool (install-ssh-tool.sh) needs an ssh client in the container:
+# layer it on top of the Open WebUI image and mount the key/hosts read-only.
+RUN_EXTRA=()
+if [ -f "$SSH_DIR/id_ed25519" ]; then
+    info "LAN SSH tool is set up: building $SSH_IMAGE (adds openssh-client)..."
+    BUILD_ARGS=()
+    for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
+        [ -n "${!v:-}" ] && BUILD_ARGS+=(--build-arg "$v=${!v}")
+    done
+    if [ "$DRY_RUN" = 1 ]; then
+        echo "   [dry-run] docker build -t $SSH_IMAGE (FROM $IMAGE + openssh-client)"
+    else
+        printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*\n' "$IMAGE" \
+            | docker build -q --network host "${BUILD_ARGS[@]}" -t "$SSH_IMAGE" - >/dev/null \
+            || die "Could not build $SSH_IMAGE (needs internet for the openssh-client package)."
+    fi
+    IMAGE="$SSH_IMAGE"
+    RUN_EXTRA+=(-v "$SSH_DIR:/ssh:ro")
 fi
 
 # ------------------------------------------------------------------ config ---
@@ -184,6 +211,7 @@ run docker run -d --name "$CONTAINER" \
     --restart unless-stopped \
     --env-file "$ENV_FILE" \
     -v "$VOLUME:/app/backend/data" \
+    "${RUN_EXTRA[@]}" \
     "$IMAGE" >/dev/null
 
 if [ "$DRY_RUN" = 0 ]; then
@@ -224,9 +252,11 @@ ${C_GRN}Web UI ready:${C_OFF}  http://${LAN_IP:-localhost}:$PORT
   2. Click "Sign up": the FIRST account created becomes the administrator.
   3. Add other people in Admin Panel > Users > "+", or let them register:
      Admin Panel > Settings > General > "Enable New Sign Ups" (you approve them).
+  4. Then run ./webui-defaults.sh once: it makes the models visible to the
+     other users (Open WebUI keeps them admin-only by default).
 
 EOF
-if [ "$FIRST_START" = 0 ] && [ -n "$DEFAULT_MODEL" ]; then
+if [ "$FIRST_START" = 0 ] && [ "$DEFAULT_MODEL_GIVEN" = 1 ]; then
     warn "Existing install: model defaults saved in Open WebUI are kept. To apply"
     warn "$DEFAULT_MODEL as default and turn off built-in tools, run:"
     warn "  ./webui-defaults.sh --model $DEFAULT_MODEL"

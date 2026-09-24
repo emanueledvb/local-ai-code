@@ -44,10 +44,16 @@ if [ "$PURGE" = 1 ]; then
     userdel ollama 2>/dev/null || true
     groupdel ollama 2>/dev/null || true
     rm -rf /usr/share/ollama
+    if [ -f /etc/local-ai-code/ssh/hosts ] && grep -qvE '^\s*(#|$)' /etc/local-ai-code/ssh/hosts; then
+        echo "==> The LAN SSH key stays authorized on these hosts; remove the line ending in"
+        echo "    'local-ai-code@$(hostname)' from ~/.ssh/authorized_keys on each:"
+        grep -vE '^\s*(#|$)' /etc/local-ai-code/ssh/hosts | sed 's/^/      /'
+    fi
     rm -rf /etc/local-ai-code
     if command -v docker >/dev/null 2>&1; then
         echo "==> Deleting Open WebUI data (users, chats) and image"
         docker volume rm open-webui >/dev/null 2>&1 || true
+        docker image rm local-ai-code/open-webui-ssh:latest >/dev/null 2>&1 || true
         docker image rm ghcr.io/open-webui/open-webui:main >/dev/null 2>&1 || true
     fi
 else

@@ -162,9 +162,10 @@ if [ "$WITH_WEBUI" = 1 ]; then
     docker save "$WEBUI_IMAGE" | gzip -1 > "$ROOT/open-webui-image.tar.gz"
 fi
 
-for f in install.sh install-webui.sh webui-defaults.sh client-setup.sh uninstall.sh README.md; do
+for f in install.sh install-webui.sh webui-defaults.sh install-ssh-tool.sh client-setup.sh uninstall.sh README.md; do
     [ -f "$SCRIPT_DIR/$f" ] && cp "$SCRIPT_DIR/$f" "$ROOT/"
 done
+cp -r "$SCRIPT_DIR/tools" "$ROOT/"
 
 cat > "$ROOT/bundle.env" <<EOF
 BUNDLE_ARCH="$ARCH"
