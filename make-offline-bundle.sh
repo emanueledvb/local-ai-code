@@ -17,6 +17,8 @@ ARCH=""
 OLLAMA_VERSION="${OLLAMA_VERSION:-}"
 OUTPUT=""
 WITH_VSCODE=0
+WITH_WEBUI=0
+WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
 
 info() { echo "==> $*"; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -31,6 +33,8 @@ Usage: $0 [options]
   --extra TAG            Additional model to include (repeatable)
   --arch amd64|arm64     Target CPU architecture (default: this machine's)
   --version X.Y.Z        Ollama version (default: latest)
+  --with-webui           Also include the Open WebUI browser chat (Docker image, ~2 GB;
+                         needs Docker here, and Docker installed on the target)
   --with-vscode          Also include the Continue VS Code extension (.vsix, linux-x64/arm64)
   -o, --output FILE      Output file (default: local-ai-bundle-<arch>.tar)
   -h, --help             Show this help
@@ -49,6 +53,7 @@ while [ $# -gt 0 ]; do
         --arch)         ARCH="${2:?}"; shift 2 ;;
         --version)      OLLAMA_VERSION="${2:?}"; shift 2 ;;
         --with-vscode)  WITH_VSCODE=1; shift ;;
+        --with-webui)   WITH_WEBUI=1; shift ;;
         -o|--output)    OUTPUT="${2:?}"; shift 2 ;;
         -h|--help)      usage; exit 0 ;;
         *)              usage >&2; die "Unknown option: $1" ;;
@@ -68,6 +73,11 @@ OUTPUT="${OUTPUT:-local-ai-bundle-$ARCH.tar}"
 
 for t in curl tar gzip; do have "$t" || die "'$t' is required."; done
 have zstd || die "'zstd' is required (Ubuntu: sudo apt-get install zstd)."
+if [ "$WITH_WEBUI" = 1 ]; then
+    if ! { have docker && docker info >/dev/null 2>&1; }; then
+        die "--with-webui needs a working Docker (try with sudo)."
+    fi
+fi
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/var/tmp}/local-ai-build.XXXXXX")
@@ -146,9 +156,16 @@ if [ "$WITH_VSCODE" = 1 ]; then
 fi
 
 # Ship the scripts inside the bundle so it is self-contained.
-for f in install.sh client-setup.sh uninstall.sh README.md; do
+if [ "$WITH_WEBUI" = 1 ]; then
+    info "Saving Open WebUI image ($WEBUI_IMAGE, linux/$ARCH) ..."
+    docker pull --platform "linux/$ARCH" "$WEBUI_IMAGE"
+    docker save "$WEBUI_IMAGE" | gzip -1 > "$ROOT/open-webui-image.tar.gz"
+fi
+
+for f in install.sh install-webui.sh webui-defaults.sh install-ssh-tool.sh client-setup.sh uninstall.sh README.md; do
     [ -f "$SCRIPT_DIR/$f" ] && cp "$SCRIPT_DIR/$f" "$ROOT/"
 done
+cp -r "$SCRIPT_DIR/tools" "$ROOT/"
 
 cat > "$ROOT/bundle.env" <<EOF
 BUNDLE_ARCH="$ARCH"

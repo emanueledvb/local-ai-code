@@ -22,6 +22,8 @@ KEEP_ALIVE="30m"
 BUNDLE=""
 OLLAMA_VERSION="${OLLAMA_VERSION:-}"            # empty = latest
 UPGRADE=0
+WEBUI=0
+WEBUI_PORT=3000
 CONFIGURE_FIREWALL=1
 DRY_RUN=0
 
@@ -61,6 +63,11 @@ Network
   --port N               API port (default: $PORT)
   --no-firewall          Do not touch ufw rules
 
+Web interface
+  --webui                Also install Open WebUI, a ChatGPT-style chat in the
+                         browser for everyone on the LAN (uses Docker)
+  --webui-port N         Web UI port (default: $WEBUI_PORT)
+
 Installation
   --bundle FILE          Install fully offline from a bundle made by
                          make-offline-bundle.sh (no internet needed)
@@ -91,6 +98,8 @@ while [ $# -gt 0 ]; do
         --bundle)         BUNDLE="${2:?}"; shift 2 ;;
         --version)        OLLAMA_VERSION="${2:?}"; shift 2 ;;
         --upgrade)        UPGRADE=1; shift ;;
+        --webui)          WEBUI=1; shift ;;
+        --webui-port)     WEBUI_PORT="${2:?}"; shift 2 ;;
         --dry-run)        DRY_RUN=1; shift ;;
         -h|--help)        usage; exit 0 ;;
         *)                usage >&2; die "Unknown option: $1" ;;
@@ -396,6 +405,26 @@ Set up VS Code (Continue extension) on this or any LAN machine:
 Useful commands:
   systemctl status ollama        journalctl -u ollama -f        ollama ps
 EOF
-[ "$LAN" = 0 ] && echo "
-Only this machine can connect. Re-run with --lan to share it on the network."
+
+# ------------------------------------------------------------------- web UI ---
+if [ "$WEBUI" = 1 ]; then
+    echo
+    info "Installing the web interface (Open WebUI)..."
+    WEBUI_ARGS=(--port "$WEBUI_PORT" --ollama-url "http://127.0.0.1:$PORT" --default-model "$CHAT_MODEL")
+    [ "$CONFIGURE_FIREWALL" = 0 ] && WEBUI_ARGS+=(--no-firewall)
+    [ -n "$ALLOW_CIDR" ] && WEBUI_ARGS+=(--allow "$ALLOW_CIDR")
+    [ "$DRY_RUN" = 1 ] && WEBUI_ARGS+=(--dry-run)
+    if [ -n "$BUNDLE" ] && [ -f "$BUNDLE_ROOT/open-webui-image.tar.gz" ]; then
+        WEBUI_ARGS+=(--image-tar "$BUNDLE_ROOT/open-webui-image.tar.gz")
+    fi
+    bash "$(dirname "$(realpath "$0")")/install-webui.sh" "${WEBUI_ARGS[@]}"
+fi
+
+if [ "$LAN" = 0 ] && [ "$WEBUI" = 1 ]; then
+    echo "
+The Ollama API is private to this machine; the network uses the web UI."
+elif [ "$LAN" = 0 ]; then
+    echo "
+Only this machine can connect. Re-run with --lan (API) or --webui (browser chat)."
+fi
 exit 0
