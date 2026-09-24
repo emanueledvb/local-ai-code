@@ -87,6 +87,21 @@ Use `--arch arm64` to build a bundle for ARM servers. Add more models with `--ex
 
 Run `./install.sh --help` for all options. Try `--dry-run` to see what would happen without changing anything.
 
+## Running in a Proxmox VM
+
+Change these VM settings before installing. Power the VM off and on again afterwards; a reboot from inside the
+guest is not enough.
+
+| Setting                         | Recommended                        | Why |
+|---------------------------------|------------------------------------|-----|
+| Processors → Type               | `host` (or `x86-64-v3`)            | The default `x86-64-v2-AES` hides AVX/AVX2, which makes inference several times slower. |
+| Processors → Sockets/Cores      | 1 socket, as many cores as you can spare | Token speed on a CPU scales with cores and memory bandwidth. |
+| Memory → Ballooning             | Off (or minimum = maximum)         | Proxmox can reclaim memory while a model is loaded. |
+| Network → Firewall              | Allow TCP 11434 from your LAN      | Only needed if the Proxmox firewall is enabled for the VM. |
+| DHCP / IP                       | Give the VM a fixed IP             | Clients store the server address. |
+
+A PCI-passed-through GPU (with machine type `q35`) is by far the biggest speed-up if the host has one.
+
 ## Security note
 
 The Ollama API has **no authentication**. With `--lan`, anyone who can reach port 11434 can use the models. Only

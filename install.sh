@@ -144,6 +144,10 @@ elif have lspci && lspci | grep -qiE 'vga|3d controller' && lspci | grep -qi nvi
     GPU_DESC="NVIDIA GPU present but driver not loaded (install it for GPU speed: sudo ubuntu-drivers install)"
 fi
 DISK_FREE_GB=$(df -BG --output=avail "$(dirname "$OLLAMA_HOME")" | tail -1 | tr -dc '0-9')
+CPU_CORES=$(nproc)
+CPU_AVX2=no
+grep -m1 '^flags' /proc/cpuinfo | grep -qw avx2 && CPU_AVX2=yes
+VIRT=$(systemd-detect-virt 2>/dev/null || true)
 
 # Pick the best Qwen coder model the hardware can run comfortably.
 #   qwen3-coder:30b  ~19 GB  (MoE, 3B active params -> usable even on CPU)
@@ -198,6 +202,7 @@ info "System summary"
 echo "   OS           : ${PRETTY_NAME:-unknown} ($ARCH)"
 echo "   RAM          : ${RAM_GB} GB"
 echo "   GPU          : $GPU_DESC"
+echo "   CPU          : $CPU_CORES cores, AVX2: $CPU_AVX2${VIRT:+ (virtualized: $VIRT)}"
 echo "   Free disk    : ${DISK_FREE_GB} GB"
 echo "   Chat model   : $CHAT_MODEL"
 echo "   Autocomplete : ${AUTOCOMPLETE_MODEL:-<none>}"
@@ -205,6 +210,15 @@ echo "   Listen on    : $BIND_ADDR:$PORT"
 echo "   Source       : ${BUNDLE:-internet (ollama.com)}"
 echo
 
+if [ "$CPU_AVX2" = no ] && [ "$VRAM_GB" -lt 6 ]; then
+    warn "This CPU exposes no AVX2: models will run several times slower than they could."
+    if [ "$VIRT" = kvm ] || [ "$VIRT" = qemu ]; then
+        warn "In Proxmox: VM > Hardware > Processors > Type = 'host' (or x86-64-v3), then power off/on the VM."
+    fi
+fi
+if [ "$VRAM_GB" -lt 6 ] && [ "$CPU_CORES" -lt 6 ]; then
+    warn "Only $CPU_CORES CPU cores and no usable GPU: expect a few tokens/second. More cores help."
+fi
 if [ "${DISK_FREE_GB:-0}" -lt 25 ] && [ "$CHAT_MODEL" = "qwen3-coder:30b" ]; then
     warn "Less than 25 GB free disk; $CHAT_MODEL needs ~19 GB."
 fi
