@@ -1,0 +1,132 @@
+# local-ai-code
+
+These scripts set up a private AI coding assistant that runs **offline** on Ubuntu. It uses
+[Ollama](https://ollama.com) and the **Qwen Coder** models. Use it on the machine where it's installed, or from
+other machines on the same network through VS Code (the Continue extension), aider, the `ollama` CLI or any
+OpenAI-compatible tool.
+
+Your code never leaves your network.
+
+```
+ ┌──────────────── Ubuntu server ────────────────┐         ┌──── dev laptop / desktop ────┐
+ │  ollama.service  (systemd, :11434)            │  LAN    │  VS Code + Continue          │
+ │    ├─ qwen2.5-coder:7b / qwen3-coder:30b      │◄────────┤  aider, ollama CLI, curl ... │
+ │    └─ qwen2.5-coder:1.5b-base (autocomplete)  │         └──────────────────────────────┘
+ └───────────────────────────────────────────────┘
+```
+
+## Quick start (server has internet during install)
+
+```bash
+git clone https://github.com/emanueledvb/local-ai-code.git
+cd local-ai-code
+sudo ./install.sh --lan          # drop --lan to keep it local to this machine
+./client-setup.sh                # configure VS Code/Continue on this machine
+```
+
+On every other machine in the network:
+
+```bash
+./client-setup.sh --server 192.168.1.50      # the server's IP, printed by install.sh
+```
+
+When the install finishes, everything works with no internet connection.
+
+## Fully offline / air-gapped install
+
+1. On **any Linux machine with internet** (no root and no Ollama needed), run:
+
+   ```bash
+   ./make-offline-bundle.sh --model qwen2.5-coder:7b --with-vscode
+   # -> local-ai-bundle-amd64.tar (+ .sha256)
+   ```
+
+2. Copy the `.tar` to the offline Ubuntu machine, for example on a USB stick.
+3. On the offline machine, run:
+
+   ```bash
+   tar -xf local-ai-bundle-amd64.tar local-ai-bundle/install.sh --strip-components=1
+   sudo ./install.sh --bundle local-ai-bundle-amd64.tar --lan
+   ```
+
+4. On offline client machines, the bundle also contains `client-setup.sh` and, with `--with-vscode`, the Continue
+   `.vsix`. Run:
+
+   ```bash
+   tar -xf local-ai-bundle-amd64.tar
+   cd local-ai-bundle
+   ./client-setup.sh --server 192.168.1.50 --vsix continue-linux-x64.vsix
+   ```
+
+Use `--arch arm64` to build a bundle for ARM servers. Add more models with `--extra TAG` (you can repeat it).
+
+## What `install.sh` does
+
+1. It detects your RAM and GPU (NVIDIA through `nvidia-smi`, AMD through `rocm-smi`) and picks a model:
+
+   | Hardware                         | Chat model          | Download size |
+   |----------------------------------|---------------------|---------------|
+   | GPU ≥ 22 GB VRAM                 | `qwen3-coder:30b`   | ~19 GB        |
+   | GPU ≥ 11 GB                      | `qwen2.5-coder:14b` | ~9 GB         |
+   | GPU ≥ 6 GB                       | `qwen2.5-coder:7b`  | ~5 GB         |
+   | CPU only, RAM ≥ 30 GB            | `qwen3-coder:30b`   | ~19 GB        |
+   | CPU only, RAM ≥ 14 GB            | `qwen2.5-coder:7b`  | ~5 GB         |
+   | CPU only, RAM ≥ 7 GB             | `qwen2.5-coder:3b`  | ~2 GB         |
+   | smaller                          | `qwen2.5-coder:1.5b`| ~1 GB         |
+
+   `qwen3-coder:30b` is a mixture-of-experts model with only about 3B parameters active per token, so it runs
+   usably on a CPU with enough RAM. It also installs `qwen2.5-coder:1.5b-base` for fast tab-autocomplete.
+   Override either choice with `--model` or `--autocomplete`.
+2. It installs Ollama as a systemd service. Online installs use the official installer. Offline installs use the
+   binaries from the bundle.
+3. It writes `/etc/systemd/system/ollama.service.d/10-local-ai-code.conf`, which sets the listen address, context
+   length (`--context`, default 16384), keep-alive and flash attention.
+4. It downloads or imports the models, then runs a test prompt.
+5. With `--lan` and `ufw` active, it opens the port **only to your local subnet**. Use `--allow CIDR` to choose a
+   different range.
+
+Run `./install.sh --help` for all options. Try `--dry-run` to see what would happen without changing anything.
+
+## Security note
+
+The Ollama API has **no authentication**. With `--lan`, anyone who can reach port 11434 can use the models. Only
+enable `--lan` on networks you trust. Turn on `ufw` before running the installer so it can restrict access to your
+subnet:
+
+```bash
+sudo ufw allow ssh && sudo ufw enable
+sudo ./install.sh --lan
+```
+
+## Using it
+
+| Tool              | How                                                                          |
+|-------------------|------------------------------------------------------------------------------|
+| VS Code           | The Continue sidebar (chat, edit) and tab-autocomplete. `client-setup.sh` writes `~/.continue/config.yaml`. |
+| Terminal          | `ollama run qwen2.5-coder:7b` (on the server, or anywhere with `OLLAMA_HOST` set) |
+| aider             | `./client-setup.sh --aider`, then `aider` in your repo                       |
+| OpenAI-compatible | Base URL `http://SERVER:11434/v1`, any API key                               |
+
+To keep VS Code fully offline, also turn off Continue telemetry: Settings → search for "Continue telemetry" →
+uncheck it.
+
+## Maintenance
+
+```bash
+systemctl status ollama          # service state
+journalctl -u ollama -f          # logs
+ollama ps                        # loaded models, GPU/CPU split
+ollama pull qwen3-coder:30b      # add another model (needs internet)
+sudo ./install.sh --upgrade      # upgrade Ollama
+sudo ./uninstall.sh              # remove Ollama, keep models
+sudo ./uninstall.sh --purge      # remove everything including models
+```
+
+## Troubleshooting
+
+- **Slow responses:** run `ollama ps`. If `PROCESSOR` shows CPU on a machine with an NVIDIA GPU, install the
+  driver with `sudo ubuntu-drivers install`, reboot, then run `sudo systemctl restart ollama`.
+- **A client can't connect:** check that the server was installed with `--lan`. Then run `sudo ufw status` and
+  `curl http://SERVER:11434/api/version` from the client.
+- **Out of memory:** use a smaller model with `sudo ./install.sh --model qwen2.5-coder:3b`, or lower the context
+  with `--context 8192`.
