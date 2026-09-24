@@ -2,8 +2,8 @@
 #
 # uninstall.sh - Remove what install.sh set up.
 #
-#   sudo ./uninstall.sh            # remove Ollama, keep downloaded models
-#   sudo ./uninstall.sh --purge    # also delete models and the 'ollama' user
+#   sudo ./uninstall.sh            # remove Ollama + web UI, keep models and chats
+#   sudo ./uninstall.sh --purge    # also delete models, chats/users and the 'ollama' user
 
 set -euo pipefail
 
@@ -16,6 +16,11 @@ case "${1:-}" in
 esac
 
 [ "$(id -u)" -eq 0 ] || exec sudo bash "$0" "$@"
+
+if command -v docker >/dev/null 2>&1 && docker container inspect open-webui >/dev/null 2>&1; then
+    echo "==> Removing Open WebUI container"
+    docker rm -f open-webui >/dev/null
+fi
 
 echo "==> Stopping Ollama service"
 systemctl disable --now ollama 2>/dev/null || true
@@ -35,10 +40,17 @@ fi
 
 if [ "$PURGE" = 1 ]; then
     echo "==> Deleting models and the ollama user"
+    if pkill -u ollama 2>/dev/null; then sleep 2; fi
     userdel ollama 2>/dev/null || true
     groupdel ollama 2>/dev/null || true
     rm -rf /usr/share/ollama
+    rm -rf /etc/local-ai-code
+    if command -v docker >/dev/null 2>&1; then
+        echo "==> Deleting Open WebUI data (users, chats) and image"
+        docker volume rm open-webui >/dev/null 2>&1 || true
+        docker image rm ghcr.io/open-webui/open-webui:main >/dev/null 2>&1 || true
+    fi
 else
-    echo "Models kept in /usr/share/ollama/.ollama/models (use --purge to delete)."
+    echo "Models and web UI chats/users kept (use --purge to delete)."
 fi
 echo "Done."
