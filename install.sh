@@ -410,7 +410,7 @@ EOF
 if [ "$WEBUI" = 1 ]; then
     echo
     info "Installing the web interface (Open WebUI)..."
-    WEBUI_ARGS=(--port "$WEBUI_PORT" --ollama-url "http://127.0.0.1:$PORT")
+    WEBUI_ARGS=(--port "$WEBUI_PORT" --ollama-url "http://127.0.0.1:$PORT" --default-model "$CHAT_MODEL")
     [ "$CONFIGURE_FIREWALL" = 0 ] && WEBUI_ARGS+=(--no-firewall)
     [ -n "$ALLOW_CIDR" ] && WEBUI_ARGS+=(--allow "$ALLOW_CIDR")
     [ "$DRY_RUN" = 1 ] && WEBUI_ARGS+=(--dry-run)

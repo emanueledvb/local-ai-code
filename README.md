@@ -116,6 +116,11 @@ history, markdown and code highlighting, file uploads, and user accounts.
 - **Tuned for CPU servers:** optional background generations (tags, follow-up suggestions, autocomplete) are off,
   so they don't slow down your answers. Chat titles are still generated. You can re-enable them under
   **Admin Panel → Settings → Interface**.
+- **No built-in tools:** Open WebUI offers models tools such as time, memory and `ask_user`. Small Qwen coder
+  models can't use them and reply with raw JSON like `{"name": "ask_user", ...}`, so tools are off for every model.
+- **Existing install:** Open WebUI saves model defaults in its database on first start, so re-running the
+  installer doesn't change them. To set the default model and turn off tools on an install that already has an
+  admin, run `./webui-defaults.sh --model qwen2.5-coder:3b`. It asks for your admin login.
 - **Data:** users and chats live in the Docker volume `open-webui` and survive upgrades. Settings are in
   `/etc/local-ai-code/webui.env`.
 
@@ -181,6 +186,10 @@ sudo ./uninstall.sh --purge      # remove everything, including models, users an
   driver with `sudo ubuntu-drivers install`, reboot, then run `sudo systemctl restart ollama`.
 - **A client can't connect:** check that the server was installed with `--lan`. Then run `sudo ufw status` and
   `curl http://SERVER:11434/api/version` from the client.
+- **A reply is raw JSON such as `{"name": "ask_user", ...}`:** the model was offered tools it can't use. Run
+  `./webui-defaults.sh`, then start a new chat.
+- **The model can't "check the server":** chat models only produce text. They can't run commands or see the
+  machine they run on.
 - **The web UI doesn't load:** run `docker ps` and `docker logs open-webui`. From another machine, check that
   `sudo ufw status` on the server allows port 3000.
 - **Out of memory:** use a smaller model with `sudo ./install.sh --model qwen2.5-coder:3b`, or lower the context

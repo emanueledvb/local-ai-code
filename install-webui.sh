@@ -16,6 +16,7 @@ PORT=3000
 IMAGE="ghcr.io/open-webui/open-webui:main"
 IMAGE_TAR=""
 OLLAMA_URL=""
+DEFAULT_MODEL=""
 ALLOW_CIDR=""
 CONFIGURE_FIREWALL=1
 UPGRADE=0
@@ -43,6 +44,7 @@ usage() {
 Usage: sudo $0 [options]
 
   --port N             Web UI port (default: $PORT)
+  --default-model TAG  Model preselected for new chats (default: best installed Qwen coder)
   --ollama-url URL     Ollama API (default: read from the Ollama service, else http://127.0.0.1:11434)
   --allow CIDR         With ufw active: only allow this subnet (default: local subnet)
   --no-firewall        Do not touch ufw rules
@@ -59,6 +61,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --port)         PORT="${2:?}"; shift 2 ;;
         --ollama-url)   OLLAMA_URL="${2:?}"; shift 2 ;;
+        --default-model) DEFAULT_MODEL="${2:?}"; shift 2 ;;
         --allow)        ALLOW_CIDR="${2:?}"; shift 2 ;;
         --no-firewall)  CONFIGURE_FIREWALL=0; shift ;;
         --image)        IMAGE="${2:?}"; shift 2 ;;
@@ -87,10 +90,10 @@ if ! curl -fsS --max-time 5 "$OLLAMA_URL/api/version" >/dev/null 2>&1; then
     [ "$DRY_RUN" = 1 ] || die "Ollama is not reachable at $OLLAMA_URL. Run ./install.sh first."
 fi
 
-# Default model in the UI: the best installed coder model (not a '-base' autocomplete model).
+# Default model in the UI: as given, else the best installed coder model
+# (never a '-base' autocomplete model).
 MODELS=$(curl -fsS --max-time 5 "$OLLAMA_URL/api/tags" 2>/dev/null | grep -oE '"name":"[^"]+"' | cut -d'"' -f4 || true)
-DEFAULT_MODEL=""
-for cand in qwen3-coder:30b qwen2.5-coder:32b qwen2.5-coder:14b qwen2.5-coder:7b \
+[ -n "$DEFAULT_MODEL" ] || for cand in qwen3-coder:30b qwen2.5-coder:32b qwen2.5-coder:14b qwen2.5-coder:7b \
             qwen2.5-coder:3b qwen2.5-coder:1.5b; do
     if echo "$MODELS" | grep -qxF "$cand"; then DEFAULT_MODEL="$cand"; break; fi
 done
@@ -150,6 +153,11 @@ ENABLE_FOLLOW_UP_GENERATION=false
 ENABLE_AUTOCOMPLETE_GENERATION=false
 ENABLE_SEARCH_QUERY_GENERATION=false
 ENABLE_RETRIEVAL_QUERY_GENERATION=false
+# * Small local models can't use Open WebUI's built-in tools (time, memory,
+#   notes, ask_user ...): they reply with raw JSON like {"name": "ask_user", ...}
+#   instead of an answer. Turn tools off for every model by default; it can be
+#   re-enabled per model in Admin Panel > Settings > Models > Capabilities.
+DEFAULT_MODEL_METADATA={"capabilities":{"builtin_tools":false}}
 # Fully offline: no update checks, no model downloads, no telemetry
 OFFLINE_MODE=true
 HF_HUB_OFFLINE=1
@@ -160,6 +168,10 @@ EOF
 fi
 
 # --------------------------------------------------------------- container ---
+# Settings marked * above are stored in the database on first start, so on an
+# existing install they must be changed in the Admin Panel instead.
+FIRST_START=1
+docker volume inspect "$VOLUME" >/dev/null 2>&1 && FIRST_START=0
 if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
     info "Replacing existing $CONTAINER container (chats and users are kept)..."
     run docker rm -f "$CONTAINER" >/dev/null
@@ -212,6 +224,14 @@ ${C_GRN}Web UI ready:${C_OFF}  http://${LAN_IP:-localhost}:$PORT
   2. Click "Sign up": the FIRST account created becomes the administrator.
   3. Add other people in Admin Panel > Users > "+", or let them register:
      Admin Panel > Settings > General > "Enable New Sign Ups" (you approve them).
+
+EOF
+if [ "$FIRST_START" = 0 ] && [ -n "$DEFAULT_MODEL" ]; then
+    warn "Existing install: model defaults saved in Open WebUI are kept. To apply"
+    warn "$DEFAULT_MODEL as default and turn off built-in tools, run:"
+    warn "  ./webui-defaults.sh --model $DEFAULT_MODEL"
+fi
+cat <<EOF
 
 Manage:  docker logs -f $CONTAINER     docker restart $CONTAINER
 Upgrade: sudo ./install-webui.sh --upgrade    (chats and users are kept)
